@@ -128,6 +128,13 @@ class ResultThread(QThread):
             speech_detected = False
             silent_frame_count = 0
 
+        # sound_device is stored as a string (schema type), but a numeric value
+        # is a device *index* — coerce it to int so sounddevice doesn't treat
+        # "2" as a device-name substring to match.
+        sound_device = recording_options.get('sound_device')
+        if isinstance(sound_device, str) and sound_device.strip().lstrip('-').isdigit():
+            sound_device = int(sound_device.strip())
+
         audio_buffer = deque(maxlen=frame_size)
         recording = []
 
@@ -140,7 +147,7 @@ class ResultThread(QThread):
             data_ready.set()
 
         with sd.InputStream(samplerate=self.sample_rate, channels=1, dtype='int16',
-                            blocksize=frame_size, device=recording_options.get('sound_device'),
+                            blocksize=frame_size, device=sound_device,
                             callback=audio_callback):
             while self.is_running and self.is_recording:
                 data_ready.wait()

@@ -63,13 +63,31 @@ class WhisperWriterApp(QObject):
             self.status_window = StatusWindow()
 
         self.create_tray_icon()
-        self.main_window.show()
+
+        # Auto-start listening so there's no need to click "Start" after launch.
+        # The app lives in the system tray; the main window stays hidden.
+        self.key_listener.start()
+
+        # Brief confirmation that it launched (it's otherwise invisible in the tray).
+        hotkey = ConfigManager.get_config_value('recording_options', 'activation_key')
+        self.tray_icon.showMessage(
+            'WhisperWriter is running',
+            f'Press {hotkey} to start/stop dictation.',
+            self.icon_idle,
+            4000
+        )
 
     def create_tray_icon(self):
         """
         Create the system tray icon and its context menu.
         """
-        self.tray_icon = QSystemTrayIcon(QIcon(os.path.join('assets', 'ww-logo.png')), self.app)
+        # Distinct icons so the tray reflects the current state at a glance.
+        self.icon_idle = QIcon(os.path.join('assets', 'ww-logo.png'))
+        self.icon_recording = QIcon(os.path.join('assets', 'microphone.png'))
+        self.icon_transcribing = QIcon(os.path.join('assets', 'pencil.png'))
+
+        self.tray_icon = QSystemTrayIcon(self.icon_idle, self.app)
+        self.tray_icon.setToolTip('WhisperWriter - idle')
 
         tray_menu = QMenu()
 
@@ -149,11 +167,25 @@ class WhisperWriterApp(QObject):
             return
 
         self.result_thread = ResultThread(self.local_model)
+        # Always reflect state in the tray icon (works even with the status window hidden).
+        self.result_thread.statusSignal.connect(self.update_tray_status)
         if not ConfigManager.get_config_value('misc', 'hide_status_window'):
             self.result_thread.statusSignal.connect(self.status_window.updateStatus)
             self.status_window.closeSignal.connect(self.stop_result_thread)
         self.result_thread.resultSignal.connect(self.on_transcription_complete)
         self.result_thread.start()
+
+    def update_tray_status(self, status):
+        """Update the tray icon and tooltip to reflect the current state."""
+        if status == 'recording':
+            self.tray_icon.setIcon(self.icon_recording)
+            self.tray_icon.setToolTip('WhisperWriter - listening...')
+        elif status == 'transcribing':
+            self.tray_icon.setIcon(self.icon_transcribing)
+            self.tray_icon.setToolTip('WhisperWriter - transcribing...')
+        else:  # idle, error, cancel
+            self.tray_icon.setIcon(self.icon_idle)
+            self.tray_icon.setToolTip('WhisperWriter - idle')
 
     def stop_result_thread(self):
         """

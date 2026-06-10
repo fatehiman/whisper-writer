@@ -1,11 +1,61 @@
 import io
 import os
+import sys
+import ctypes
 import numpy as np
 import soundfile as sf
 from faster_whisper import WhisperModel
 from openai import OpenAI
 
 from utils import ConfigManager
+
+# Map a Windows primary-language id (low 10 bits of the LANGID) to a Whisper
+# language code. Extend as needed; unmapped layouts fall back to auto-detect.
+_PRIMARY_LANG_TO_WHISPER = {
+    0x09: 'en',  # English
+    0x29: 'fa',  # Persian (Farsi)
+    0x1f: 'tr',  # Turkish
+    0x01: 'ar',  # Arabic
+    0x07: 'de',  # German
+    0x0c: 'fr',  # French
+    0x19: 'ru',  # Russian
+    0x0a: 'es',  # Spanish
+}
+
+
+def get_active_keyboard_language():
+    """Return the Whisper language code for the active window's keyboard layout.
+
+    Mirrors Windows voice-typing behaviour: the dictation language follows the
+    selected input language. Returns None on non-Windows or unknown layouts.
+    """
+    if sys.platform != 'win32':
+        return None
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
+        user32.GetKeyboardLayout.restype = ctypes.c_void_p
+
+        hwnd = user32.GetForegroundWindow()
+        thread_id = user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), 0)
+        hkl = user32.GetKeyboardLayout(thread_id) or 0
+        primary = (hkl & 0xFFFF) & 0x3FF  # LANGID -> primary language id
+        return _PRIMARY_LANG_TO_WHISPER.get(primary)
+    except Exception:
+        return None
+
+
+def resolve_language():
+    """Pick the transcription language. If config 'language' is set, honour it;
+    otherwise follow the active keyboard layout (falling back to auto-detect)."""
+    configured = ConfigManager.get_config_section('model_options')['common']['language']
+    if configured:
+        return configured
+    kb_lang = get_active_keyboard_language()
+    if kb_lang:
+        ConfigManager.console_print(f'Language from keyboard layout: {kb_lang}')
+    return kb_lang  # None -> Whisper auto-detects
 
 def create_local_model():
     """
@@ -56,7 +106,7 @@ def transcribe_local(audio_data, local_model=None):
     audio_data_float = audio_data.astype(np.float32) / 32768.0
 
     response = local_model.transcribe(audio=audio_data_float,
-                                      language=model_options['common']['language'],
+                                      language=resolve_language(),
                                       initial_prompt=model_options['common']['initial_prompt'],
                                       condition_on_previous_text=model_options['local']['condition_on_previous_text'],
                                       temperature=model_options['common']['temperature'],
@@ -82,7 +132,7 @@ def transcribe_api(audio_data):
     response = client.audio.transcriptions.create(
         model=model_options['api']['model'],
         file=('audio.wav', byte_io, 'audio/wav'),
-        language=model_options['common']['language'],
+        language=resolve_language(),
         prompt=model_options['common']['initial_prompt'],
         temperature=model_options['common']['temperature'],
     )

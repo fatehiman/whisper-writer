@@ -1,3 +1,5 @@
+import sys
+import ctypes
 from abc import ABC, abstractmethod
 from enum import Enum, auto
 from typing import Callable, Set
@@ -288,6 +290,13 @@ class KeyListener:
         self.load_activation_keys()
         self.initialize_backends()
         self.select_backend_from_config()
+        self._apply_suppression()
+
+    def _apply_suppression(self):
+        """Tell the active backend which keys to suppress (the activation combo)."""
+        if self.active_backend and hasattr(self.active_backend, 'set_suppression_keys'):
+            keys = self.key_chord.keys if self.key_chord else set()
+            self.active_backend.set_suppression_keys(keys)
 
     def initialize_backends(self):
         """Initialize available input backends."""
@@ -360,11 +369,26 @@ class KeyListener:
     def parse_key_combination(self, combination_string: str) -> Set[KeyCode | frozenset[KeyCode]]:
         """Parse a string representation of key combination into a set of KeyCodes."""
         keys = set()
+        _ctrl = frozenset({KeyCode.CTRL_LEFT, KeyCode.CTRL_RIGHT})
+        _shift = frozenset({KeyCode.SHIFT_LEFT, KeyCode.SHIFT_RIGHT})
+        _alt = frozenset({KeyCode.ALT_LEFT, KeyCode.ALT_RIGHT})
+        _meta = frozenset({KeyCode.META_LEFT, KeyCode.META_RIGHT})
         key_map = {
-            'CTRL': frozenset({KeyCode.CTRL_LEFT, KeyCode.CTRL_RIGHT}),
-            'SHIFT': frozenset({KeyCode.SHIFT_LEFT, KeyCode.SHIFT_RIGHT}),
-            'ALT': frozenset({KeyCode.ALT_LEFT, KeyCode.ALT_RIGHT}),
-            'META': frozenset({KeyCode.META_LEFT, KeyCode.META_RIGHT}),
+            'CTRL': _ctrl, 'CONTROL': _ctrl,
+            'SHIFT': _shift,
+            'ALT': _alt, 'OPTION': _alt,
+            # The Windows key is "Meta" internally; accept common aliases.
+            'META': _meta, 'WIN': _meta, 'CMD': _meta, 'SUPER': _meta, 'WINDOWS': _meta,
+        }
+
+        # Map literal characters to their KeyCode enum names (the enum has no
+        # member named "4" or "/", it has FOUR and SLASH).
+        char_aliases = {
+            '0': 'ZERO', '1': 'ONE', '2': 'TWO', '3': 'THREE', '4': 'FOUR',
+            '5': 'FIVE', '6': 'SIX', '7': 'SEVEN', '8': 'EIGHT', '9': 'NINE',
+            '-': 'MINUS', '=': 'EQUALS', '[': 'LEFT_BRACKET', ']': 'RIGHT_BRACKET',
+            ';': 'SEMICOLON', "'": 'QUOTE', '`': 'BACKQUOTE', '\\': 'BACKSLASH',
+            ',': 'COMMA', '.': 'PERIOD', '/': 'SLASH', ' ': 'SPACE',
         }
 
         for key in combination_string.upper().split('+'):
@@ -372,6 +396,7 @@ class KeyListener:
             if key in key_map:
                 keys.add(key_map[key])
             else:
+                key = char_aliases.get(key, key)
                 try:
                     keycode = KeyCode[key]
                     keys.add(keycode)
@@ -411,6 +436,7 @@ class KeyListener:
     def update_activation_keys(self):
         """Update activation keys from the current configuration."""
         self.load_activation_keys()
+        self._apply_suppression()
 
 class EvdevBackend(InputBackend):
     """
@@ -760,18 +786,118 @@ class PynputBackend(InputBackend):
         self.keyboard = None
         self.mouse = None
         self.key_map = None
+        # Windows hotkey suppression: swallow the activation keys so they don't
+        # leak into the focused app (e.g. typing a "j" on win+j). A trigger key
+        # is only suppressed while ALL its required modifiers are held, so the
+        # same key still types normally on its own (and Ctrl+W etc. still work).
+        self.suppress_trigger_vks = set()
+        self.suppress_modifier_groups = []  # list of vk-sets, one per modifier
+        self._vk_to_keycode = {}
+        self._held_vks = set()
+
+    # Map our internal KeyCode enum to Windows Virtual-Key codes for suppression.
+    @staticmethod
+    def _build_vk_map():
+        vk = {
+            KeyCode.CTRL_LEFT: 0xA2, KeyCode.CTRL_RIGHT: 0xA3,
+            KeyCode.SHIFT_LEFT: 0xA0, KeyCode.SHIFT_RIGHT: 0xA1,
+            KeyCode.ALT_LEFT: 0xA4, KeyCode.ALT_RIGHT: 0xA5,
+            KeyCode.META_LEFT: 0x5B, KeyCode.META_RIGHT: 0x5C,
+            KeyCode.SPACE: 0x20, KeyCode.ENTER: 0x0D, KeyCode.TAB: 0x09,
+            KeyCode.BACKSPACE: 0x08, KeyCode.ESC: 0x1B, KeyCode.INSERT: 0x2D,
+            KeyCode.DELETE: 0x2E, KeyCode.HOME: 0x24, KeyCode.END: 0x23,
+            KeyCode.PAGE_UP: 0x21, KeyCode.PAGE_DOWN: 0x22,
+            KeyCode.CAPS_LOCK: 0x14, KeyCode.PAUSE: 0x13, KeyCode.PRINT_SCREEN: 0x2C,
+            KeyCode.UP: 0x26, KeyCode.DOWN: 0x28, KeyCode.LEFT: 0x25, KeyCode.RIGHT: 0x27,
+            KeyCode.MINUS: 0xBD, KeyCode.EQUALS: 0xBB, KeyCode.LEFT_BRACKET: 0xDB,
+            KeyCode.RIGHT_BRACKET: 0xDD, KeyCode.SEMICOLON: 0xBA, KeyCode.QUOTE: 0xDE,
+            KeyCode.BACKQUOTE: 0xC0, KeyCode.BACKSLASH: 0xDC, KeyCode.COMMA: 0xBC,
+            KeyCode.PERIOD: 0xBE, KeyCode.SLASH: 0xBF,
+        }
+        # Letters A-Z -> 0x41-0x5A
+        for i, name in enumerate('ABCDEFGHIJKLMNOPQRSTUVWXYZ'):
+            vk[KeyCode[name]] = 0x41 + i
+        # Digits ONE..NINE -> 0x31-0x39, ZERO -> 0x30
+        for i, name in enumerate(['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE',
+                                  'SIX', 'SEVEN', 'EIGHT', 'NINE']):
+            vk[KeyCode[name]] = 0x31 + i
+        vk[KeyCode.ZERO] = 0x30
+        # Function keys F1-F24 -> 0x70-0x87
+        for i in range(1, 25):
+            vk[KeyCode[f'F{i}']] = 0x6F + i
+        return vk
+
+    def set_suppression_keys(self, keys):
+        """Compute the Virtual-Key codes to suppress from an activation key set."""
+        vk_map = self._build_vk_map()
+        self._vk_to_keycode = {v: k for k, v in vk_map.items()}
+        self.suppress_trigger_vks = set()
+        self.suppress_modifier_groups = []
+        # Some events (synthetic/injected, or certain drivers) report the generic
+        # modifier VK (VK_SHIFT/CONTROL/MENU) rather than the left/right-specific
+        # one; include both so the "modifier held" test is reliable.
+        generic = {0xA0: 0x10, 0xA1: 0x10, 0xA2: 0x11, 0xA3: 0x11, 0xA4: 0x12, 0xA5: 0x12}
+        for key in keys:
+            if isinstance(key, frozenset):  # a modifier group (e.g. CTRL = {L, R})
+                group = {vk_map[k] for k in key if k in vk_map}
+                group |= {generic[v] for v in list(group) if v in generic}
+                if group:
+                    self.suppress_modifier_groups.append(group)
+            elif key in vk_map:
+                self.suppress_trigger_vks.add(vk_map[key])
 
     def start(self):
         """Start listening for keyboard and mouse events."""
+        # Idempotent: stop any existing listeners before starting new ones.
+        if self.keyboard_listener or self.mouse_listener:
+            self.stop()
+
         if self.keyboard is None or self.mouse is None:
             from pynput import keyboard, mouse
             self.keyboard = keyboard
             self.mouse = mouse
             self.key_map = self._create_key_map()
 
+        listener_kwargs = {}
+        if sys.platform == 'win32' and self.suppress_trigger_vks:
+            _get_async_key_state = ctypes.windll.user32.GetAsyncKeyState
+
+            def _modifier_held(group):
+                # Live physical state — immune to missed key-up events. The high
+                # bit (0x8000) of GetAsyncKeyState is set while the key is down.
+                return any(_get_async_key_state(v) & 0x8000 for v in group)
+
+            def _win32_event_filter(msg, data):
+                should_suppress = False
+                try:
+                    vk = data.vkCode
+                    is_down = msg in (0x0100, 0x0104)   # WM_KEYDOWN / WM_SYSKEYDOWN
+                    is_up = msg in (0x0101, 0x0105)     # WM_KEYUP / WM_SYSKEYUP
+                    # Suppress a trigger key only while ALL required modifiers are held
+                    # (so "w" alone, or Ctrl+W without Alt, still passes through).
+                    if vk in self.suppress_trigger_vks and (
+                        not self.suppress_modifier_groups
+                        or all(_modifier_held(g) for g in self.suppress_modifier_groups)
+                    ):
+                        should_suppress = True
+                        # A suppressed event never reaches the normal on_press
+                        # callback, so feed it into chord detection right here.
+                        kc = self._vk_to_keycode.get(vk)
+                        if kc is not None and (is_down or is_up):
+                            evt = InputEvent.KEY_PRESS if is_down else InputEvent.KEY_RELEASE
+                            self.on_input_event((kc, evt))
+                except Exception:
+                    pass  # never let the filter crash the listener
+                # suppress_event() raises SuppressException to do its work, so it
+                # MUST be called outside the try/except above (which would eat it).
+                if should_suppress:
+                    self.keyboard_listener.suppress_event()
+            listener_kwargs['win32_event_filter'] = _win32_event_filter
+
         self.keyboard_listener = self.keyboard.Listener(
             on_press=self._on_keyboard_press,
-            on_release=self._on_keyboard_release
+            on_release=self._on_keyboard_release,
+            **listener_kwargs
         )
         self.mouse_listener = self.mouse.Listener(
             on_click=self._on_mouse_click
