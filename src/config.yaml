@@ -1,0 +1,35 @@
+misc:
+  hide_status_window: true
+  noise_on_completion: true
+  print_to_terminal: true
+model_options:
+  api:
+    api_key: null
+    base_url: https://api.openai.com/v1
+    model: whisper-1
+  common:
+    initial_prompt: null
+    language: null
+    temperature: 0.0
+  local:
+    compute_type: float16
+    condition_on_previous_text: true
+    device: cuda
+    model: large-v3
+    model_path: null
+    vad_filter: true
+  use_api: false
+post_processing:
+  add_trailing_space: true
+  input_method: pynput
+  remove_capitalization: false
+  remove_trailing_period: false
+  writing_key_press_delay: 0.005
+recording_options:
+  activation_key: shift+win+w
+  input_backend: auto
+  min_duration: 100
+  recording_mode: continuous
+  sample_rate: 16000
+  silence_duration: 900
+  sound_device: '2'
