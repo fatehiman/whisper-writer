@@ -1,6 +1,10 @@
 misc:
+  flash_blink_count: 2
+  flash_color: '#00FF00'
+  flash_on_completion: true
+  flash_thickness: 12
   hide_status_window: true
-  noise_on_completion: true
+  noise_on_completion: false
   print_to_terminal: true
 model_options:
   api:

@@ -12,6 +12,7 @@ from result_thread import ResultThread
 from ui.main_window import MainWindow
 from ui.settings_window import SettingsWindow
 from ui.status_window import StatusWindow
+from ui.flash_overlay import FlashOverlay
 from transcription import create_local_model
 from input_simulation import InputSimulator
 from utils import ConfigManager
@@ -61,6 +62,9 @@ class WhisperWriterApp(QObject):
 
         if not ConfigManager.get_config_value('misc', 'hide_status_window'):
             self.status_window = StatusWindow()
+
+        # Silent, focus-free "done" cue (replaces the mic-polluting beep).
+        self.flash_overlay = FlashOverlay()
 
         self.create_tray_icon()
 
@@ -200,6 +204,18 @@ class WhisperWriterApp(QObject):
         """
         self.input_simulator.typewrite(result)
 
+        # Visual "done" cue: a Commodore-64 style border blink. Preferred over
+        # the audible beep, which the mic picks up and re-transcribes as junk.
+        # Non-blocking (timer-driven), so it adds no delay before recording
+        # restarts below.
+        if ConfigManager.get_config_value('misc', 'flash_on_completion'):
+            self.flash_overlay.flash(
+                color=ConfigManager.get_config_value('misc', 'flash_color') or '#00FF00',
+                thickness=ConfigManager.get_config_value('misc', 'flash_thickness') or 12,
+                blink_count=ConfigManager.get_config_value('misc', 'flash_blink_count') or 2,
+            )
+
+        # Kept for anyone who still wants sound, but off by default (see above).
         if ConfigManager.get_config_value('misc', 'noise_on_completion'):
             AudioPlayer(os.path.join('assets', 'beep.wav')).play(block=True)
 

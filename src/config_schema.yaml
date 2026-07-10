@@ -165,3 +165,19 @@ misc:
     value: false
     type: bool
     description: "Set to true to play a noise after the transcription has been typed out."
+  flash_on_completion:
+    value: true
+    type: bool
+    description: "Set to true to blink a coloured screen border (Commodore-64 style) after the transcription has been typed out. A silent, focus-free alternative to noise_on_completion (the beep pollutes the mic)."
+  flash_color:
+    value: '#00FF00'
+    type: str
+    description: "Colour of the completion border blink, as a hex string (e.g. '#00FF00' green, '#00AAFF' blue)."
+  flash_thickness:
+    value: 12
+    type: int
+    description: "Thickness in pixels of the completion border blink."
+  flash_blink_count:
+    value: 2
+    type: int
+    description: "How many times the completion border blinks. ~2 blinks is roughly 300ms total."
