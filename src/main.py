@@ -72,14 +72,8 @@ class WhisperWriterApp(QObject):
         # The app lives in the system tray; the main window stays hidden.
         self.key_listener.start()
 
-        # Brief confirmation that it launched (it's otherwise invisible in the tray).
-        hotkey = ConfigManager.get_config_value('recording_options', 'activation_key')
-        self.tray_icon.showMessage(
-            'WhisperWriter is running',
-            f'Press {hotkey} to start/stop dictation.',
-            self.icon_idle,
-            4000
-        )
+        # Launch is silent by design: no startup balloon/notification. The tray
+        # icon (and its tooltip, which names the hotkey) is the only cue.
 
     def create_tray_icon(self):
         """
@@ -91,7 +85,10 @@ class WhisperWriterApp(QObject):
         self.icon_transcribing = QIcon(os.path.join('assets', 'pencil.png'))
 
         self.tray_icon = QSystemTrayIcon(self.icon_idle, self.app)
-        self.tray_icon.setToolTip('WhisperWriter - idle')
+        # Hotkey lives in the tooltip since there's no startup notification.
+        hotkey = ConfigManager.get_config_value('recording_options', 'activation_key')
+        self._tray_tooltip_suffix = f' ({hotkey})'
+        self.tray_icon.setToolTip('WhisperWriter - idle' + self._tray_tooltip_suffix)
 
         tray_menu = QMenu()
 
@@ -189,7 +186,8 @@ class WhisperWriterApp(QObject):
             self.tray_icon.setToolTip('WhisperWriter - transcribing...')
         else:  # idle, error, cancel
             self.tray_icon.setIcon(self.icon_idle)
-            self.tray_icon.setToolTip('WhisperWriter - idle')
+            self.tray_icon.setToolTip('WhisperWriter - idle'
+                                      + getattr(self, '_tray_tooltip_suffix', ''))
 
     def stop_result_thread(self):
         """
